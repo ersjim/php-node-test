@@ -1,6 +1,6 @@
 <?php
 
-define("MS_TIMEOUT_HEARTBEAT", 2);
+define("MS_TIMEOUT_HEARTBEAT", 5);
 define("MS_TIMEOUT_EVENT", 100);
 define("MS_TIMEOUT_ALL", 1000);
 
@@ -65,16 +65,21 @@ function module_event(string $name, ...$params): string
 
 // LOGGING functions:
 function module_log(string $message): void {
+    // print LOG with white text
+    // (this is the default color, so we don't need to do anything)
     _module_log("LOG  ", $message);
 }
 function module_warn(string $message): void {
-    _module_log("WARN ", $message);
+    // print WARN with yellow text
+    _module_log("\033[33mWARN \033[0m", $message);
 }
 function module_error(string $message): void {
-    _module_log("ERROR", $message);
+    // print ERROR with red text
+    _module_log("\033[31mERROR\033[0m", $message);
 }
 function module_info(string $message): void {
-    _module_log("INFO ", $message);
+    // print INFO with green text
+    _module_log("\033[32mINFO \033[0m", $message);
 }
 function _module_log(string $type, string $message): void {
     if (function_exists("write_to_general_log")) {
@@ -82,7 +87,7 @@ function _module_log(string $type, string $message): void {
         // ^ we use call_user_func to shut intelephense up.
     } else {
         // print with red text
-        printf("\033[31m[%s] %s\033[0m\n", $type, $message);
+        printf("[%s] %s\n", $type, $message);
     }
 }
 
@@ -92,8 +97,10 @@ function module_service_up(): int
         $time = MS_TIMEOUT_HEARTBEAT;
         $output = module_fetch("GET", "http://localhost:3000/platform/service", [], $time);
         if ($time < MS_TIMEOUT_HEARTBEAT) {
+            module_warn("HEARTBEAT time exceeded ".MS_TIMEOUT_HEARTBEAT." milliseconds: $time, service down");
             module_host_available(SERVICE_UP);
         } else {
+            module_warn(sprintf("module ping took too long! (took %f/%d milliseconds)", $time, MS_TIMEOUT_HEARTBEAT));
             module_host_available(SERVICE_DOWN);
         }
         if ($output !== "OK") {
@@ -143,12 +150,14 @@ function module_fetch(string $method, string $url, array $body, int &$timeout_ms
     $info = curl_getinfo($ch);
 
     if ($info["http_code"] !== 200) {
-        module_error(sprintf("curl failed: %d: %s", $info["http_code"], curl_error($ch)));
+        $timeout_ms = (microtime(true) - $start_time) * 1000;
+        module_error(sprintf("curl returned error code: %d: %s", $info["http_code"], curl_error($ch)));
         curl_close($ch);
         return "";
     }
     if ($output === false) {
-        module_error("curl failed: " . curl_error($ch));
+        $timeout_ms = (microtime(true) - $start_time) * 1000;
+        module_error("curl returned false: " . curl_error($ch));
         curl_close($ch);
         return "";
     }
