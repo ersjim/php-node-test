@@ -24,48 +24,40 @@ function module_host_available(...$setval): int
 function module_event(string $name, ...$params): string
 {
     static $cumulative_time = 0;
-    if (module_service_up() !== 1) {
+    if (module_service_up() !== SERVICE_UP) {
+        module_error("service is down, not sending event");
         return "";
     }
 
-    $content = json_encode([
+    $maxtime = 1.5;
+    $time = $maxtime;
+    $output = module_fetch("POST", "http://localhost:3000/platform/service", [
         "event" => $name,
         "params" => $params,
-    ]);
-    if (json_last_error()) {
-        module_error("json_encode failed: " . json_last_error_msg());
-        return "";
-    }
+    ], $time);
 
-    $ctx = stream_context_create(
-        [
-            "http" => [
-                "timeout" => 1, // 1 sec timeout
-                "method" => "POST",
-                "header" => "Content-Type: application/json",
-                // TODO - you need to encode the event name also!
-                "content" => $content,
-            ],
-        ],
-    );
-
-    $start = microtime(true);
-    $output = file_get_contents("http://localhost:3000/platform/service", false, $ctx);
-    $time = microtime(true) - $start;
     $cumulative_time += $time;
     if ($time > 0.5) {
+        module_info("time exceeded 0.5 seconds: $time, service down");
         module_host_available(SERVICE_DOWN);
     }
     if ($cumulative_time > 2) {
+        module_info("cumulative time exceeded 2 seconds: $cumulative_time, service down");
         module_host_available(SERVICE_DOWN);
     }
 
     $output = json_decode($output, true);
-    if ($output["success"] !== true) {
-        // TODO - do something with $output["message"]
+    if (json_last_error()) {
+        module_error("json_decode failed: " . json_last_error_msg());
         return "";
     }
-    return strval($output["result"]);
+
+    if ($output["success"] !== true) {
+        module_warn("server unsuccessful: " . $output["message"]);
+        return "";
+    }
+
+    return json_encode($output["result"]) ?? "";
 }
 
 // LOGGING functions:
@@ -85,17 +77,18 @@ function _module_log(string $type, string $message): void {
     if (function_exists("write_to_general_log")) {
         call_user_func("write_to_general_log", "[$type] $message");
         // ^ we use call_user_func to shut intelephense up.
+    } else {
+        // print with red text
+        printf("\033[31m[%s] %s\033[0m\n", $type, $message);
     }
 }
 
 function module_service_up(): int
 {
-    static $maxtime = 0.01;
+    static $maxtime = 1.5;
     if (module_host_available() === SERVICE_UNDETERMINED) {
-        $ctx = stream_context_create(["http" => ["timeout"=>$maxtime]]);
-        $start = microtime(true);
-        $output = file_get_contents("http://localhost:3000/platform/service", false, $ctx);
-        $time = microtime(true) - $start;
+        $time = $maxtime;
+        $output = module_fetch("GET", "http://localhost:3000/platform/service", [], $time);
         if ($time < $maxtime) {
             module_host_available(SERVICE_UP);
         } else {
@@ -108,6 +101,62 @@ function module_service_up(): int
     return module_host_available();
 }
 
+function module_fetch(string $method, string $url, array $body, float &$timeout): string
+{
+
+    if (!in_array($method, ["GET", "POST"])) {
+        module_error("module_fetch: invalid method: $method");
+        $timeout = 0.0;
+        return "";
+    }
+
+    $start_time = microtime(true);
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    if ($method === "POST") {
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "POST");
+        $payload = json_encode($body);
+        if (json_last_error()) {
+            module_error("json_encode failed: " . json_last_error_msg());
+            return "";
+        }
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+    }
+
+    // set sub-second timeout
+    curl_setopt($ch, CURLOPT_TIMEOUT_MS, $timeout * 1000);
+    // on UNIX systems, there's a bug/feature where curl will
+    // immediately return with sub-second timeouts because of 
+    // something to do with signals. This option disables that:
+
+    curl_setopt($ch, CURLOPT_NOSIGNAL, 1);
+    // set headers - we use json for everything
+
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Content-Type: application/json",
+    ]);
+
+    $output = curl_exec($ch);
+    $info = curl_getinfo($ch);
+
+    if ($info["http_code"] !== 200) {
+        module_error(sprintf("curl failed: %d: %s", $info["http_code"], curl_error($ch)));
+        curl_close($ch);
+        return "";
+    }
+    if ($output === false) {
+        module_error("curl failed: " . curl_error($ch));
+        curl_close($ch);
+        return "";
+    }
+
+    curl_close($ch);
+    $timeout = microtime(true) - $start_time;
+    return $output;
+
+}
+
 
 function run_module_tests() {
 
@@ -116,22 +165,25 @@ function run_module_tests() {
         exit(1);
     }
 
-    $output = module_event("echo");
+    $output = "";
+
+    $output = sprintf("%s\n'%s'", $output, module_event("echo"));
     assert($output === "");
 
-    $output = module_event("echo", 1);
+    $output = sprintf("%s\n'%s'", $output, module_event("echo", 1));
     assert($output === "1");
 
-    $output = module_event("echo", "test");
+    $output = sprintf("%s\n'%s'", $output, module_event("echo", "test"));
     assert($output === "test");
 
-    $output = module_event("echo", ["test"]);
+    $output = sprintf("%s\n'%s'", $output, module_event("echo", ["test"]));
     assert($output === '["test"]');
 
-    $output = module_event("echo", ["test" => "test"]);
+    $output = sprintf("%s\n'%s'", $output, module_event("echo", ["test" => "test"]));
     assert($output === '{"test":"test"}');
 
     assert($output === "test");
+    echo $output;
 }
 
 if (php_sapi_name() === "cli") {

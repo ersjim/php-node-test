@@ -8,12 +8,12 @@ sleep 0.1
 #run php:
 echo
 echo "should fail:"
-php main.php
+php module.php
 echo
 
 sleep 5
 
 echo
 echo "should succeed:"
-php main.php
+php module.php
 echo
