@@ -1,5 +1,9 @@
 <?php
 
+define("MS_TIMEOUT_HEARTBEAT", 2);
+define("MS_TIMEOUT_EVENT", 100);
+define("MS_TIMEOUT_ALL", 1000);
+
 define("SERVICE_UP", 1);
 define("SERVICE_UNDETERMINED", 0);
 define("SERVICE_DOWN", -1);
@@ -29,20 +33,19 @@ function module_event(string $name, ...$params): string
         return "";
     }
 
-    $maxtime = 1.5;
-    $time = $maxtime;
+    $time = MS_TIMEOUT_EVENT;
     $output = module_fetch("POST", "http://localhost:3000/platform/service", [
         "event" => $name,
         "params" => $params,
     ], $time);
 
     $cumulative_time += $time;
-    if ($time > 0.5) {
-        module_info("time exceeded 0.5 seconds: $time, service down");
+    if ($time > MS_TIMEOUT_EVENT) {
+        module_info("time exceeded ".MS_TIMEOUT_EVENT." milliseconds: $time, service down");
         module_host_available(SERVICE_DOWN);
     }
-    if ($cumulative_time > 2) {
-        module_info("cumulative time exceeded 2 seconds: $cumulative_time, service down");
+    if ($cumulative_time > MS_TIMEOUT_ALL) {
+        module_info("cumulative time exceeded ".MS_TIMEOUT_ALL." milliseconds: $cumulative_time, service down");
         module_host_available(SERVICE_DOWN);
     }
 
@@ -85,11 +88,10 @@ function _module_log(string $type, string $message): void {
 
 function module_service_up(): int
 {
-    static $maxtime = 1.5;
     if (module_host_available() === SERVICE_UNDETERMINED) {
-        $time = $maxtime;
+        $time = MS_TIMEOUT_HEARTBEAT;
         $output = module_fetch("GET", "http://localhost:3000/platform/service", [], $time);
-        if ($time < $maxtime) {
+        if ($time < MS_TIMEOUT_HEARTBEAT) {
             module_host_available(SERVICE_UP);
         } else {
             module_host_available(SERVICE_DOWN);
@@ -101,12 +103,12 @@ function module_service_up(): int
     return module_host_available();
 }
 
-function module_fetch(string $method, string $url, array $body, float &$timeout): string
+function module_fetch(string $method, string $url, array $body, int &$timeout_ms): string
 {
 
     if (!in_array($method, ["GET", "POST"])) {
         module_error("module_fetch: invalid method: $method");
-        $timeout = 0.0;
+        $timeout_ms = -1;
         return "";
     }
 
@@ -124,8 +126,8 @@ function module_fetch(string $method, string $url, array $body, float &$timeout)
         curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
     }
 
-    // set sub-second timeout
-    curl_setopt($ch, CURLOPT_TIMEOUT_MS, $timeout * 1000);
+    // set sub-second timeout_ms
+    curl_setopt($ch, CURLOPT_TIMEOUT_MS, $timeout_ms);
     // on UNIX systems, there's a bug/feature where curl will
     // immediately return with sub-second timeouts because of 
     // something to do with signals. This option disables that:
@@ -152,7 +154,7 @@ function module_fetch(string $method, string $url, array $body, float &$timeout)
     }
 
     curl_close($ch);
-    $timeout = microtime(true) - $start_time;
+    $timeout_ms = (microtime(true) - $start_time) * 1000;
     return $output;
 
 }
